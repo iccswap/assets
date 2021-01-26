@@ -1,6 +1,6 @@
 {
     "name": "Orion Protocol",
-    "website": "https://www.orionprotocol.io/",
+    "website": "https://orionprotocol.io/",
     "source_code": "https://github.com/orionprotocol",
     "white_paper": "https://www.orionprotocol.io/hubfs/whitepaper.pdf",
     "short_description": "Built on the most advanced liquidity aggregator ever developed, Orion Protocol is the DeFi platform building industry-first solutions for traders, blockchains, exchanges, and crypto projects.",
@@ -27,5 +27,6 @@
             "handle": "orion-protocol"
         }
     ],
-    "explorer": "https://etherscan.io/token/0x0258F474786DdFd37ABCE6df6BBb1Dd5dfC4434a"
+    "explorer": "https://etherscan.io/token/0x0258F474786DdFd37ABCE6df6BBb1Dd5dfC4434a",
+    "research": "https://research.binance.com/en/projects/orion-protocol"
 }

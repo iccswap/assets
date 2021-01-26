@@ -1,23 +1,5 @@
-import { ActionInterface, CheckStepInterface } from "./interface";
-import axios from "axios";
-import {
-    getChainTokenlistPath
-} from "./repo-structure";
-import { Binance } from "./blockchains";
-import { writeFileSync } from "./filesystem";
-import { formatJson } from "./json";
-import { assetID } from "./asset";
-import * as config from "../config";
-import { CoinType } from "@trustwallet/wallet-core";
-import { toSatoshis } from "./numbers";
-import { TokenType } from "./tokentype";
-
-class BinanceMarket {
-    base_asset_symbol: string
-    quote_asset_symbol: string
-    lot_size: string
-    tick_size: string
-}
+import { readJsonFile, writeJsonFile } from "../generic/json";
+import { diff } from "jsondiffpatch";
 
 class Version {
     major: number
@@ -31,15 +13,15 @@ class Version {
     }
 }
 
-class List {
+export class List {
     name: string
     logoURI: string
     timestamp: string
-    tokens: [TokenItem]
-    pairs: [Pair]
+    tokens: TokenItem[]
+    pairs: Pair[]
     version: Version
 
-    constructor(name: string, logoURI: string, timestamp: string, tokens: [TokenItem], version: Version) {
+    constructor(name: string, logoURI: string, timestamp: string, tokens: TokenItem[], version: Version) {
         this.name = name
         this.logoURI = logoURI
         this.timestamp = timestamp;
@@ -48,7 +30,7 @@ class List {
     }
 }
 
-class TokenItem {
+export class TokenItem {
     asset: string;
     type: string;
     address: string;
@@ -56,9 +38,9 @@ class TokenItem {
     symbol: string;
     decimals: number;
     logoURI: string;
-    pairs: [Pair];
+    pairs: Pair[];
 
-    constructor(asset: string, type: string, address: string, name: string, symbol: string, decimals: number, logoURI: string, pairs: [Pair]) {
+    constructor(asset: string, type: string, address: string, name: string, symbol: string, decimals: number, logoURI: string, pairs: Pair[]) {
         this.asset = asset
         this.type = type
         this.address = address
@@ -70,111 +52,98 @@ class TokenItem {
     }
 }
 
-class Pair {
+export class Pair {
     base: string;
-    lotSize: string;
-    tickSize: string;
+    lotSize?: string;
+    tickSize?: string;
 
-    constructor(base: string, lotSize: string, tickSize: string) {
+    constructor(base: string, lotSize?: string, tickSize?: string) {
         this.base = base
         this.lotSize = lotSize
         this.tickSize = tickSize
     }
 }
 
-export class TokenLists implements ActionInterface {
-    getName(): string { return "TokenLists"; }
-
-    getSanityChecks = null;
-
-    getConsistencyChecks(): CheckStepInterface[] {
-        const steps: CheckStepInterface[] = [];
-        return steps;
+export function generateTokensList(titleCoin: string, tokens: TokenItem[], time: string, versionMajor: number, versionMinor = 1, versionPatch = 0): List {
+    if (!time) {
+        time = (new Date()).toISOString();
     }
-
-    async consistencyFix(): Promise<void> {
-
-        // binance chain list
-        const list = await generateBinanceTokensList()
-        writeFileSync(getChainTokenlistPath(Binance), formatJson(generateTokensList(list)));
-
-        return 
-    }
-}
-
-function generateTokensList(tokens: [TokenItem]): List {
-    return new List(
-        "Trust Wallet: BNB",
+    const list = new List(
+        `Trust Wallet: ${titleCoin}`,
         "https://trustwallet.com/assets/images/favicon.png",
-        "2020-10-03T12:37:57.000+00:00",
+        time,
         tokens,
-        new Version(0, 1, 0)
-    )
+        new Version(versionMajor, versionMinor, versionPatch)
+    );
+    sort(list);
+    return list;
 }
 
-async function generateBinanceTokensList(): Promise<[TokenItem]> {
-    const decimals = CoinType.decimals(CoinType.binance)
-    const BNBSymbol = CoinType.symbol(CoinType.binance)
-    const markets: [BinanceMarket] = await axios.get(`${config.binanceDexURL}/v1/markets?limit=10000`).then(r => r.data);
-    const tokens = await axios.get(`${config.binanceDexURL}/v1/tokens?limit=10000`).then(r => r.data);
-    const tokensMap = Object.assign({}, ...tokens.map(s => ({[s.symbol]: s})));
-    const pairsMap = {}
-    const pairsList = new Set();
+function totalPairs(list: List): number {
+    let c = 0;
+    list.tokens.forEach(t => c += (t.pairs || []).length);
+    return c;
+}
 
-    markets.forEach(market => {
-        const key = market.quote_asset_symbol
+export function writeToFile(filename: string, list: List): void {
+    writeJsonFile(filename, list);
+    console.log(`Tokenlist: list with ${list.tokens.length} tokens and ${totalPairs(list)} pairs written to ${filename}.`);
+}
 
-        function pair(market: BinanceMarket): Pair {
-            return new Pair(
-                asset(market.base_asset_symbol),
-                toSatoshis(market.lot_size, decimals),
-                toSatoshis(market.tick_size, decimals)
-            )
-        }
-
-        if (pairsMap[key]) {
-            const newList = pairsMap[key]
-            newList.push(pair(market))
-            pairsMap[key] = newList
-        } else {
-            pairsMap[key] = [
-                pair(market)
-            ]
-        }
-        pairsList.add(market.base_asset_symbol)
-        pairsList.add(market.quote_asset_symbol)
-    })
-
-    function logoURI(symbol: string): string {
-        if (symbol == BNBSymbol) {
-            return `${config.assetsURL}/blockchains/binance/assets/${symbol}/logo.png`
-        }
-        return `${config.assetsURL}/blockchains/binance/assets/${symbol}/logo.png`
+// Write out to file, updating version+timestamp if there was change
+export function writeToFileWithUpdate(filename: string, list: List): void {
+    let listOld: List = undefined;
+    try {
+        listOld = readJsonFile(filename) as List;
+    } catch (err) {
+        listOld = undefined;
     }
-    function asset(symbol: string): string {
-        if (symbol == BNBSymbol) {
-            return assetID(CoinType.binance)
+    let changed = false;
+    if (listOld === undefined) {
+        changed = true;
+    } else {
+        list.version = listOld.version; // take over
+        const diffs = diffTokenlist(list, listOld);
+        if (diffs != undefined) {
+            //console.log("List has Changed", JSON.stringify(diffs));
+            changed = true;
+            list.version = new Version(list.version.major + 1, 0, 0);
         }
-        return assetID(CoinType.binance, symbol)
     }
-    function tokenType(symbol: string): string {
-        if (symbol == BNBSymbol) {
-            return TokenType.COIN
-        }
-        return TokenType.BEP2
+    if (changed) {
+        // update timestqamp
+        list.timestamp = (new Date()).toISOString();
+        console.log(`Version and timestamp updated, ${list.version.major}.${list.version.minor}.${list.version.patch} timestamp ${list.timestamp}`);
     }
-    const list = <[string]>Array.from(pairsList.values())
-    return <[TokenItem]>list.map(item => {
-        const token = tokensMap[item]
-        return new TokenItem (
-            asset(token.symbol),
-            tokenType(token.symbol),
-            token.symbol,
-            token.name,
-            token.original_symbol,
-            decimals,
-            logoURI(token.symbol),
-            pairsMap[token.symbol] || []
-    )
-    }).sort((n1,n2) => (n2.pairs || []).length - (n1.pairs || []).length);
+    writeToFile(filename, list);
+}
+
+function sort(list: List) {
+    list.tokens.sort((t1, t2) => {
+        const t1pairs = (t1.pairs || []).length;
+        const t2pairs = (t2.pairs || []).length;
+        if (t1pairs != t2pairs) { return t2pairs - t1pairs; }
+        return t1.address.localeCompare(t2.address);
+    });
+    list.tokens.forEach(t => {
+        t.pairs.sort((p1, p2) => p1.base.localeCompare(p2.base));
+    });
+}
+
+function clearUnimportantFields(list: List) {
+    list.timestamp = "";
+    list.version = new Version(0, 0, 0);
+}
+
+export function diffTokenlist(listOrig1: List, listOrig2: List): unknown {
+    // deep copy, to avoid changes
+    const list1 = JSON.parse(JSON.stringify(listOrig1));
+    const list2 = JSON.parse(JSON.stringify(listOrig2));
+    clearUnimportantFields(list1);
+    clearUnimportantFields(list2);
+    sort(list1);
+    sort(list2);
+    // compare
+    const diffs = diff(list1, list2);
+    return diffs;
 }
